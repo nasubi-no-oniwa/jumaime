@@ -4,7 +4,7 @@ import { gsap } from "gsap";
 import { makePipeline } from "./post.js";
 import { makeOkiku } from "./okiku.js";
 import { makeCatchScene } from "./catch.js";
-import { Sound, kanaMoras, COUNTS, COUNT_KANJI } from "./audio.js";
+import { Sound, kanaMoras, COUNTS, COUNT_KANJI, LINES } from "./audio.js";
 import { dots, setVertical } from "./dots.js";
 import { LANGS, TX, pickLang } from "./tx.js";
 import { ls, badName, myId, seedOf, hasRun, netStart, dropRun, submit, board, minTimeOfMap } from "./rank.js";
@@ -483,5 +483,5 @@ const simulate = function (seconds, bot) {
   for (const k of names) snd[k] = saved[k]; botVec = null; runHeld = false;
   return { t, mode, ev, maxStill, plate: P.plate, key: P.hasKey, state: O.state };
 };
-window.__g = { Sound, kanaMoras, COUNTS, lockQuality() { qLock = true; }, get quality() { return quality; }, simulate, seekOpening(t) { opT0 = now - t; }, seekCatch(t) { cs.t0 = now - t; }, minT() { return minTimeOfMap(map); }, skip() { $("#skip").click(); }, P, O, get map() { return map; }, get world() { return world; }, get mode() { return mode; }, newRun, toggleHide, caught, escape, showResult, applyLang, openRank, setLang(l) { lang = l; applyLang(); }, get T() { return T; }, set finT(v) { finT = v; }, snd, pipe, ok, cam, startPlay, breakPlate, set time(v) { tPlay = v; } };
+window.__g = { Sound, kanaMoras, COUNTS, LINES, lockQuality() { qLock = true; }, get quality() { return quality; }, simulate, seekOpening(t) { opT0 = now - t; }, seekCatch(t) { cs.t0 = now - t; }, minT() { return minTimeOfMap(map); }, skip() { $("#skip").click(); }, P, O, get map() { return map; }, get world() { return world; }, get mode() { return mode; }, newRun, toggleHide, caught, escape, showResult, applyLang, openRank, setLang(l) { lang = l; applyLang(); }, get T() { return T; }, set finT(v) { finT = v; }, snd, pipe, ok, cam, startPlay, breakPlate, set time(v) { tPlay = v; } };
 }
