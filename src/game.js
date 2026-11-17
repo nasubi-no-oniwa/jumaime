@@ -5,7 +5,9 @@ import { makePipeline } from "./post.js";
 import { makeOkiku } from "./okiku.js";
 import { makeCatchScene } from "./catch.js";
 import { Sound, kanaMoras, COUNTS, COUNT_KANJI } from "./audio.js";
-import { dots } from "./dots.js";
+import { dots, setVertical } from "./dots.js";
+import { LANGS, TX, pickLang } from "./tx.js";
+import { ls, badName, myId, seedOf, hasRun, netStart, dropRun, submit, board, minTimeOfMap } from "./rank.js";
 import { S, GW, GH, genMap, buildWorld, roomOf, roomCenter, doorPoint } from "./world.js";
 import { createFrame, clearFrame, createFx, composite } from "../vendor/pixelfx/core/index.js";
 import * as spiritFlame from "../vendor/pixelfx/fx/fire/spirit-flame.js";
@@ -16,6 +18,13 @@ const $ = (s) => document.querySelector(s);
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x)), clamp01 = (x) => clamp(x, 0, 1), lerp = (a, b, u) => a + (b - a) * u;
 const ease = (u) => { u = clamp01(u); return u * u * (3 - 2 * u); };
 const hash = (n) => { const x = Math.sin(n * 91.7) * 43758.5453; return x - Math.floor(x); };
+// ---- ことば（日本語・英語・繁体中文・韓国語） ----
+let lang = pickLang(ls.get("jm_lang", null)), T = TX[lang];
+const t = (k, v) => { let x = T[k]; if (v) for (const key in v) x = x.split("{" + key + "}").join(v[key]); return x; };
+const IS_MOBILE = /iPhone|iPod|iPad|Android|Mobile/i.test(navigator.userAgent || "");
+const FINE = matchMedia("(hover:hover) and (pointer:fine)").matches;
+const NONET = __DEV__ && /[?&]nonet=1/.test(location.search);
+const track = (name, o) => { try { if (typeof window.gtag === "function") window.gtag("event", name, { game: "jumaime", ...o }); } catch (e) { } };
 
 const canvas = $("#gl");
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance" });
@@ -96,9 +105,15 @@ function qualityStep(raw) { // 重い端末では、見た目をほぼ変えず�
 }
 const keys = {}; let joy = null, runHeld = false, botVec = null, heartT = 0, fear = 0, gateHintT = 0, camY = 15.5;
 
-function newRun(withOpening) {
-  if (world) scene.remove(world.group);
-  map = genMap((Date.now() ^ (Math.random() * 1e9)) >>> 0); world = buildWorld(map); scene.add(world.group);
+function disposeWorld(w) { scene.remove(w.group); w.group.traverse((m) => { if (m.geometry) m.geometry.dispose(); const ms = Array.isArray(m.material) ? m.material : m.material ? [m.material] : []; for (const x of ms) { if (x.map) x.map.dispose(); x.dispose(); } }); }
+let busy = false;
+async function newRun(withOpening) {
+  // 始めるときにサーバーの時刻（切符）をもらい、その時刻から間取りを決める。通信できなければ、でたらめな間取りで始めて、この回は記録しない
+  if (busy) return; busy = true; let st = null;
+  if (NONET) dropRun(); else { try { st = await Promise.race([netStart(), new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 2500))]); } catch (e) { dropRun(); st = null; } }
+  busy = false;
+  if (world) disposeWorld(world);
+  map = genMap(st ? seedOf(st) : (((Date.now() ^ (Math.random() * 1e9)) >>> 0) || 1)); world = buildWorld(map); scene.add(world.group);
   Object.assign(P, { x: world.start.x, z: world.start.z, face: Math.PI, stamina: 1, running: false, tired: false, hidden: null, hasKey: false, plate: true, stride: 0 });
   Object.assign(O, { x: world.well.x + 1.6, z: world.well.z + 0.4, state: "wander", path: [], wait: 14, mul: 1, lastSeen: null, seenT: -9, knows: null, searchT: 0, hearCd: 0, countI: 0, countT: 3, croakT: 0, stare: 0, peekT: 0, sink: 0, rushT: 0 });
   scene.add(ok.root); ok.root.scale.setScalar(1); ok.root.position.set(O.x, 0, O.z);
@@ -119,7 +134,7 @@ function countSub(text, vol, dx, dz, chase) {
 }
 
 // 目的（いつも画面の上に出す）と、通った部屋が描かれていく地図
-function setGoal() { $("#goalText").textContent = P.hasKey ? "門から出ろ" : "鍵をさがせ"; $("#goal").classList.toggle("gate", P.hasKey); }
+function setGoal() { $("#goalL").textContent = T.goalL; $("#goalText").textContent = P.hasKey ? T.goalGate : T.goalKey; $("#goal").classList.toggle("gate", P.hasKey); }
 let visited = new Set(), mapT = 0, bellT = 2, nearCd = 0, warnPlate = false;
 const mapCv = $("#map"), mctx = mapCv.getContext("2d");
 function drawMap() {
@@ -135,8 +150,8 @@ function drawMap() {
 function hudStep(dt) {
   mapT -= dt; if (mapT <= 0) { mapT = 0.12; visited.add(roomOf(P.x, P.z)); drawMap(); }
   if (!P.hasKey && roomOf(P.x, P.z) === map.keyRoom) { bellT -= dt; if (bellT <= 0) { bellT = 2; snd.bell(0.16, clamp((world.key.x - P.x) / 6, -1, 1)); } } // 同じ部屋にあるときだけ、鈴が小さく鳴る
-  nearCd -= dt; if (fear > 0.5 && O.state !== "chase" && O.state !== "open" && !P.hidden && nearCd <= 0) { hint("近い……", 1.8); nearCd = 14; }
-  if (P.plate && P.running && P.stamina < 0.38 && !warnPlate) { warnPlate = true; hint("走りすぎだ　皿が落ちる", 2.2); } if (P.stamina > 0.7) warnPlate = false;
+  nearCd -= dt; if (fear > 0.5 && O.state !== "chase" && O.state !== "open" && !P.hidden && nearCd <= 0) { hint(T.hNear, 1.8); nearCd = 14; }
+  if (P.plate && P.running && P.stamina < 0.38 && !warnPlate) { warnPlate = true; hint(T.hRun, 2.2); } if (P.stamina > 0.7) warnPlate = false;
 }
 
 // ---- はじまりの映像：九枚まで数えて、一枚足りない ----
@@ -162,9 +177,9 @@ function openingAt(t, dt) {
   sky.intensity = 0; moon.intensity = 34 * fl; ghostLight.position.set(cam.position.x - 1.2, 2.6, cam.position.z + 0.6); ghostLight.distance = 14; ghostLight.intensity = 9 * fl; // 月明かりと、手前からのうすい光
   flames.forEach((f, i) => { f.update(dt); const a = ca + Math.PI + (i - 1) * 1.15 + Math.sin(t * 0.3 + i * 2) * 0.25, rr = 1.6 + Math.sin(t * 0.7 + i) * 0.25; f.sp.position.set(w.x + Math.cos(a) * rr, 1.25 + Math.sin(t * 0.9 + i * 1.7) * 0.2 + i * 0.12, w.z + Math.sin(a) * rr); f.sp.material.opacity = t > OPT.rise ? Math.max(0, 1 - (t - OPT.rise) * 0.8) : 1; });
   // 字幕（数えるたびに右から左へ一行ずつ）
-  while (opFired < 9 && t >= OPT.first + opFired * OPT.step) { const d = document.createElement("div"); d.innerHTML = dots(COUNT_KANJI[opFired] + "…"); $("#opsubs").appendChild(d); gsap.fromTo(d, { opacity: 0, filter: "blur(6px)" }, { opacity: 0.86, filter: "blur(0px)", duration: 0.55 }); opFired++; }
-  if (opFired === 9 && t >= OPT.miss) { gsap.to("#opsubs div", { opacity: 0.22, duration: 0.8 }); const d = $("#opmiss"); d.innerHTML = "<span>" + dots("一枚……") + "</span>"; gsap.fromTo(d, { opacity: 0 }, { opacity: 1, duration: 0.9 }); opFired = 10; }
-  if (opFired === 10 && t >= OPT.miss + 1.75) { const d = $("#opmiss"); d.innerHTML += "<span>足りない</span>"; gsap.fromTo(d.lastChild, { opacity: 0 }, { opacity: 1, duration: 0.5 }); opFired = 11; }
+  while (opFired < 9 && t >= OPT.first + opFired * OPT.step) { const d = document.createElement("div"); d.innerHTML = dots(T.counts[opFired] + "…"); $("#opsubs").appendChild(d); gsap.fromTo(d, { opacity: 0, filter: "blur(6px)" }, { opacity: 0.86, filter: "blur(0px)", duration: 0.55 }); opFired++; }
+  if (opFired === 9 && t >= OPT.miss) { gsap.to("#opsubs div", { opacity: 0.22, duration: 0.8 }); const d = $("#opmiss"); d.innerHTML = "<span>" + dots(T.miss1) + "</span>"; gsap.fromTo(d, { opacity: 0 }, { opacity: 1, duration: 0.9 }); opFired = 10; }
+  if (opFired === 10 && t >= OPT.miss + 1.75) { const d = $("#opmiss"); d.innerHTML += "<span>" + T.miss2 + "</span>"; gsap.fromTo(d.lastChild, { opacity: 0 }, { opacity: 1, duration: 0.5 }); opFired = 11; }
   if (opFired === 11 && t >= OPT.cut) { $("#opsubs").innerHTML = ""; $("#opmiss").innerHTML = ""; const tt = $("#bigtitle"); gsap.fromTo(tt, { opacity: 0 }, { opacity: 1, duration: 1.4, delay: 0.7 }); gsap.to(tt, { opacity: 0, duration: 0.9, delay: 3.0 }); opFired = 12; }
   if (t >= OPT.end) showHowto();
 }
@@ -176,7 +191,8 @@ function startPlay() {
   ok.root.rotation.set(0, 0, 0); ok.root.position.set(O.x, 0, O.z); cam.fov = 44; cam.updateProjectionMatrix();
   cam.position.set(P.x, camY, P.z + 5.8); pipe.u.dark.value = 1; gsap.to(pipe.u.dark, { value: 0, duration: 1.8 });
   setGoal(); visited = new Set([roomOf(P.x, P.z)]); drawMap(); bellT = 2.5; nearCd = 0; warnPlate = false;
-  setTimeout(() => mode === "play" && hint("鍵は　床できらきら光る", 3.6), 1200);
+  setTimeout(() => mode === "play" && hint(T.hKey, 3.6), 1200);
+  track("game_start");
 }
 
 // ---- 当たり判定 ----
@@ -214,7 +230,7 @@ function okikuAI(dt) {
   const dist = Math.hypot(P.x - O.x, P.z - O.z), sees = canSee(), pr = roomOf(P.x, P.z), orr = roomOf(O.x, O.z), pan = clamp((O.x - P.x) / 12, -1, 1), near = clamp01(1 - dist / 34);
   O.hearCd -= dt; O.peekT = Math.max(0, (O.peekT || 0) - dt);
   if (sees) {
-    if (O.state !== "chase") { O.state = "chase"; hint("見つかった　逃げろ", 2); snd.sting(snd.now, 1.6, 0.3); snd.boom(snd.now, 0.7); pipe.u.inv.value = 1; setTimeout(() => (pipe.u.inv.value = 0), 70); O.croakT = 0.2; }
+    if (O.state !== "chase") { O.state = "chase"; hint(T.hFound, 2); snd.sting(snd.now, 1.6, 0.3); snd.boom(snd.now, 0.7); pipe.u.inv.value = 1; setTimeout(() => (pipe.u.inv.value = 0), 70); O.croakT = 0.2; }
     O.lastSeen = { x: P.x, z: P.z }; O.seenT = tPlay; O.goalSet = false; O.path = [{ x: P.x, z: P.z }]; moveAlong(3.15 * O.mul, dt);
   } else if (O.state === "chase") { // 見失った：どの戸口へ逃げたかまでは見えている。そこへ向かう
     if (!P.hidden && tPlay - O.seenT < 0.75) { O.lastSeen = { x: P.x, z: P.z }; O.goalSet = false; }
@@ -238,10 +254,10 @@ function okikuAI(dt) {
   }
   if (!P.hidden && Math.hypot(P.x - O.x, P.z - O.z) < 0.7) return caught();
   // 声：さまよっている間は皿を数え続ける。追ってくる間はのどを鳴らす
-  if (O.state === "chase" || O.state === "open") { O.croakT -= dt; if (O.croakT <= 0) { snd.croak(0.12 + near * near * 0.7, pan); countSub("ア゛ア゛…", near * near, O.x - P.x, O.z - P.z, true); O.croakT = 0.75 + Math.random() * 0.5; } }
+  if (O.state === "chase" || O.state === "open") { O.croakT -= dt; if (O.croakT <= 0) { snd.croak(0.12 + near * near * 0.7, pan); countSub(T.croak, near * near, O.x - P.x, O.z - P.z, true); O.croakT = 0.75 + Math.random() * 0.5; } }
   else { O.countT -= dt; if (O.countT <= 0) { const a = 0.05 + near * near * 0.7, dz = O.z - P.z;
-      if (O.countI < 9) { snd.voice(kanaMoras(COUNTS[O.countI], 160, 1.15), snd.now + 0.02, { amp: a, breath: 0.6, croak: 0.85, croakHz: 24, drive: 3, pan, wet: 0.8, tail: 0.3 }); countSub(COUNT_KANJI[O.countI] + "…", near * near, O.x - P.x, dz); O.countI++; O.countT = O.countI === 9 ? 3.3 : 2.5; }
-      else { snd.voice(kanaMoras("いちまいたりない", 126, 1.4), snd.now + 0.02, { amp: a * 1.2, breath: 0.5, croak: 0.95, croakHz: 20, drive: 4.5, pan, wet: 0.8, tail: 0.4 }); countSub("一枚　足りない", near * near, O.x - P.x, dz); O.countI = 0; O.countT = 5.2; } } }
+      if (O.countI < 9) { snd.voice(kanaMoras(COUNTS[O.countI], 160, 1.15), snd.now + 0.02, { amp: a, breath: 0.6, croak: 0.85, croakHz: 24, drive: 3, pan, wet: 0.8, tail: 0.3 }); countSub(T.counts[O.countI] + "…", near * near, O.x - P.x, dz); O.countI++; O.countT = O.countI === 9 ? 3.3 : 2.5; }
+      else { snd.voice(kanaMoras("いちまいたりない", 126, 1.4), snd.now + 0.02, { amp: a * 1.2, breath: 0.5, croak: 0.95, croakHz: 20, drive: 4.5, pan, wet: 0.8, tail: 0.4 }); countSub(T.missOne, near * near, O.x - P.x, dz); O.countI = 0; O.countT = 5.2; } } }
 }
 function okikuLook(dt) { // 見た目
   const chase = O.state === "chase" || O.state === "open", tgt = chase ? { reach: 0.9, headDown: 0.22, headTilt: -0.3, mouth: 0.3, part: 0.5, eye: 1.2, shiver: 0.55, twitch: 0.9, lean: 0.28, fps: 12 } : O.wait > 0 ? { reach: 0, headDown: 0.5, headTilt: 0.35, mouth: 0, part: 0.1, eye: 0.7, shiver: 0.1, twitch: 0.7, lean: 0.05, fps: 8 } : { reach: 0, headDown: 0.72, headTilt: 0.08, mouth: 0, part: 0, eye: 0.55, shiver: 0, twitch: 0.3, lean: 0.07, fps: 9 };
@@ -274,11 +290,11 @@ function playerStep(dt) {
   else P.stamina = Math.min(1, P.stamina + dt * (mag > 0 ? 0.085 : 0.15));
   if (P.plate && P.running && P.stamina < 0.4 && Math.random() < dt * (5 + (0.4 - P.stamina) * 30)) snd.clink(0.06 + (0.4 - P.stamina) * 0.3);
   // 鍵・門・押し入れ
-  if (!P.hasKey && Math.hypot(P.x - world.key.x, P.z - world.key.z) < 0.85) { P.hasKey = true; keyFx.g.visible = false; burstAt(world.key.x, world.key.z); snd.chime(0.3); hint("鍵を　手に入れた", 2.6); $("#keyIcon").classList.add("on"); setGoal(); drawMap(); }
+  if (!P.hasKey && Math.hypot(P.x - world.key.x, P.z - world.key.z) < 0.85) { P.hasKey = true; keyFx.g.visible = false; burstAt(world.key.x, world.key.z); snd.chime(0.3); hint(T.hGot, 2.6); $("#keyIcon").classList.add("on"); setGoal(); drawMap(); }
   const gd = Math.hypot(P.x - world.gate.fx, P.z - world.gate.fz); gateHintT -= dt;
-  if (gd < 1.25) { if (P.hasKey) return escape(); if (gateHintT <= 0) { hint("鍵がいる", 2.4); gateHintT = 6; } }
+  if (gd < 1.25) { if (P.hasKey) return escape(); if (gateHintT <= 0) { hint(T.hNeed, 2.4); gateHintT = 6; } }
   let best = null, bd = 1.05; for (const c of world.closets) { const d = Math.hypot(P.x - c.fx, P.z - c.fz); if (d < bd) { bd = d; best = c; } }
-  P.near = best; $("#act").classList.toggle("on", !!best); $("#act").textContent = "隠れる";
+  P.near = best; $("#act").classList.toggle("on", !!best); $("#act").textContent = T.hide;
 }
 function playerLook(dt) {
   const g = PM.g; g.position.set(P.x, Math.abs(Math.sin(P.stride)) * 0.03 * P.moving, P.z); g.rotation.y = P.face;
@@ -298,7 +314,7 @@ function breakPlate() {
     // お菊さんが気づく：ここから速さが10倍
     O.mul = 10; O.rushT = 6; if (O.state !== "chase") { pathTo(P.x, P.z); O.state = "investigate"; } O.wait = 0; snd.sting(snd.now + 0.25, 2.6, 0.4);
     snd.voice([{ v: "a", d: 1.6, f: [420, 520], fp: [[0, 420], [0.3, 560], [1, 470]], vib: 0.05 }], snd.now + 0.3, { amp: 0.8, breath: 0.4, croak: 0.5, croakHz: 40, drive: 8, wet: 0.9, shriek: 1, tail: 0.3 });
-    hint("皿が割れた　隠れろ", 2.8); pipe.u.inv.value = 1; setTimeout(() => (pipe.u.inv.value = 0), 90);
+    hint(T.hBroke, 2.8); pipe.u.inv.value = 1; setTimeout(() => (pipe.u.inv.value = 0), 90);
   } });
 }
 
@@ -309,7 +325,7 @@ function toggleHide() {
   const c = P.near; if (!c) return;
   // 入るところを見られていたら、開けに来る
   O.knows = O.state === "chase" && (canSee() || (tPlay - O.seenT < 0.5 && roomOf(O.x, O.z) === c.room)) ? c : null;
-  P.hidden = c; P.running = false; PM.g.visible = false; c.panels.forEach((m) => (m.visible = false)); world.setView(true); $("#slit").classList.add("on"); snd.slide(0.3); $("#act").textContent = "出る";
+  P.hidden = c; P.running = false; PM.g.visible = false; c.panels.forEach((m) => (m.visible = false)); world.setView(true); $("#slit").classList.add("on"); snd.slide(0.3); $("#act").textContent = T.out;
 }
 function hideView(dt) {
   const c = P.hidden; cam.fov = 84; cam.position.set(c.cx + c.nx * 0.2, 1.22 + Math.sin(now * 1.3) * 0.012, c.cz + c.nz * 0.2); cam.lookAt(c.cx + c.nx * 4, 1.08, c.cz + c.nz * 4); cam.rotation.z += Math.sin(now * 0.9) * 0.006; cam.updateProjectionMatrix();
@@ -323,16 +339,71 @@ function caught() {
   setTimeout(() => { if (mode !== "caught") return; mode = "catch"; cs.begin(); cs.t0 = now; cs.playAudio(snd); }, 380);
 }
 function escape() {
-  if (mode !== "play") return; mode = "escape"; snd.creak(0.45); world.gate.col.x0 = world.gate.col.x1 = 1e9;
+  if (mode !== "play") return; mode = "escape"; finT = Math.round(tPlay * 1000); snd.creak(0.45); world.gate.col.x0 = world.gate.col.x1 = 1e9;
   const G = world.gate; world.gateDoors.forEach((m, i) => { if (i < 2) gsap.to(m.rotation, { y: (i ? 1 : -1) * 1.3 * (G.alongX ? 1 : -1), duration: 1.6, ease: "power2.inOut" }); else gsap.to(m.position, { y: 0.1, duration: 0.5 }); });
   gsap.to(pipe.u.dark, { value: 1, duration: 2.2, delay: 0.6, onComplete: () => showResult(true) }); if (drone) { drone.stop(2.5); drone = null; }
 }
+let finT = 0, wonRun = false, sentName = null, postText = "";
+const setMsg = (text, cls) => { const el = $("#recMsg"); el.textContent = text; el.className = cls || ""; };
+function setBig(el, html, vh, vw, px) { // 大きな題字。縦書きは文字の数に合わせて大きさを決める
+  el.innerHTML = html; if (!T.vert) { el.style.fontSize = ""; return; }
+  const n = Math.max(3, [...html.replace(/<br>/g, "")].length); el.style.fontSize = `min(${((vh * 3) / n).toFixed(2)}vh, ${vw}vw, ${px}px)`;
+}
 function showResult(won) {
-  mode = "result"; document.body.dataset.mode = "result"; pipe.u.dark.value = 1; resetPostKeepDark();
-  const s = Math.floor(tPlay), tm = `${Math.floor(s / 60)}分${String(s % 60).padStart(2, "0")}秒`;
-  $("#resTitle").textContent = won ? "夜明け" : "十枚目"; $("#resLine").textContent = won ? `屋敷を出るまで　${tm}` : `逃げのびた時間　${tm}`;
-  $("#resNote").textContent = won ? (P.plate ? "皿は　割れずに残った" : "皿は　割れた") : "お前が　十枚目だ";
-  gsap.fromTo("#result", { opacity: 0 }, { opacity: 1, duration: 1.6 });
+  mode = "result"; document.body.dataset.mode = "result"; pipe.u.dark.value = 1; resetPostKeepDark(); wonRun = won; if (!won) finT = Math.round(tPlay * 1000);
+  fillResult(true); const el = $("#result"); el.scrollTop = 0; el.style.pointerEvents = "";
+  gsap.fromTo(el, { opacity: 0 }, { opacity: 1, duration: 1.6 });
+  track("game_end", { won: won ? 1 : 0, sec: Math.round(finT / 1000), plate: P.plate ? 1 : 0, pf: IS_MOBILE ? "m" : "p" });
+}
+function fillResult(fresh) {
+  const tm = T.time(Math.floor(finT / 1000));
+  setBig($("#resTitle"), wonRun ? T.resWin : T.resLose, 8, 14, 70);
+  $("#resLine").textContent = t(wonRun ? "lineWin" : "lineLose", { t: tm }); $("#resNote").textContent = wonRun ? (P.plate ? T.nOk : T.nBroken) : T.nLose;
+  postText = (wonRun ? t("postWin", { t: tm, p: P.plate ? T.pOk : T.pBroken }) : t("postLose", { t: tm })) + "\n" + T.tags;
+  $("#recBox").hidden = !wonRun; if (!wonRun || !fresh) return;
+  sentName = null; $("#nm").value = ls.get("jm_name", ""); const can = hasRun(); $("#recBtn").disabled = !can; $("#nm").disabled = !can; setMsg(can ? "" : T.offline, "dim");
+}
+// ---- ランキング ----
+async function doRecord() {
+  let nm = $("#nm").value.trim().slice(0, 12); if (!nm) return setMsg(T.needname, "err"); if (badName(nm)) return setMsg(T.badname, "err");
+  $("#recBtn").disabled = true; setMsg(T.sending, "dim");
+  try { const r = await submit(nm, finT, P.plate), rk = (x) => (x ? t("rankN", { r: x }) : T.rankOut); ls.set("jm_name", nm); sentName = nm; setMsg(t("sent", { d: rk(r.d), a: rk(r.a) }) + (r.okA ? "" : T.notbetter), ""); track("rank_submit"); }
+  catch (e) { setMsg(T.senderr, "err"); $("#recBtn").disabled = false; }
+}
+const fmtT = (ms) => { const x = Math.floor(ms / 1000); return Math.floor(x / 60) + ":" + String(x % 60).padStart(2, "0") + "." + String(Math.floor((ms % 1000) / 10)).padStart(2, "0"); };
+let rkWhen = "d", rkTok = 0;
+async function openRank(when) {
+  if (when) rkWhen = when; const pn = $("#rank"); if (!pn.classList.contains("on")) { pn.classList.add("on"); pn.scrollTop = 0; }
+  $("#tabD").classList.toggle("on", rkWhen === "d"); $("#tabA").classList.toggle("on", rkWhen === "all");
+  const box = $("#rkList"), tok = ++rkTok, msg = (x) => { box.innerHTML = ""; const d = document.createElement("div"); d.className = "rkmsg"; d.textContent = x; box.appendChild(d); }; msg(T.loading);
+  try {
+    const rows = await board(rkWhen); if (tok !== rkTok) return; if (!rows.length) return msg(T.empty);
+    const me = myId(); box.innerHTML = "";
+    for (const x of rows) { const d = document.createElement("div"); d.className = "rk" + (x.id === me ? " me" : ""); const add = (tag, cls, txt) => { const e = document.createElement(tag); e.className = cls; e.textContent = txt; d.appendChild(e); };
+      add("span", "r", x.rk); add("span", "n", typeof x.n === "string" ? x.n : "?"); if (x.p === 1) add("i", "p", "皿"); add("span", "tm", fmtT(x.t)); box.appendChild(d); }
+  } catch (e) { if (tok === rkTok) msg(T.rkErr); }
+}
+// ---- Xに投稿（自分の紹介ツイートを引用する。引用するツイートは一覧ページ quote/ で切りかえ） ----
+const SHARE_URL = "https://nasubi-no-oniwa.github.io/jumaime/"; let QUOTE = {};
+if (!NONET) fetch("https://ft-red-default-rtdb.asia-southeast1.firebasedatabase.app/xquote/g/jumaime.json").then((r) => r.json()).then((d) => { if (d && typeof d === "object") QUOTE = d; }).catch(() => { });
+function quoteURL() { const u = (lang === "ja" ? QUOTE.ja : QUOTE.en) || ""; return /^https:\/\/x\.com\/[A-Za-z0-9_]{1,15}\/status\/\d{5,25}$/.test(u) ? u : ""; }
+function xIntent(text, url) { const q = quoteURL(); return "https://x.com/intent/post?text=" + encodeURIComponent(q ? text + "\n" + url : text) + "&url=" + encodeURIComponent(q || url); }
+
+// ---- ことばを画面に入れる ----
+const FONT = { zh: "Noto+Serif+TC:wght@500;600;900", ko: "Noto+Serif+KR:wght@500;600;900" };
+function applyLang() {
+  T = TX[lang]; document.documentElement.lang = { ja: "ja", en: "en", zh: "zh-Hant", ko: "ko" }[lang]; document.body.dataset.lang = lang; document.body.classList.toggle("hz", !T.vert); setVertical(T.vert); document.title = T.doc;
+  if (FONT[lang] && !document.getElementById("f-" + lang)) { const l = document.createElement("link"); l.id = "f-" + lang; l.rel = "stylesheet"; l.href = "https://fonts.googleapis.com/css2?family=" + FONT[lang] + "&display=swap"; document.head.appendChild(l); }
+  setBig($("#tBig"), T.big, 11, 19, 92); setBig($("#bigtitle b"), T.big, 13, 22, 400);
+  const set = (id, v) => ($(id).textContent = v);
+  set("#tSub", T.sub); set("#start", T.start); set("#rankBtn", T.rank); set("#rankBtn2", T.rank); set("#tNote", T.note);
+  set("#howH", T.howH); $("#howLead").innerHTML = T.lead; $("#howList").innerHTML = T.how.map((h, i) => `<li><i>${T.howI[i]}</i><span>${h}</span></li>`).join(""); set("#ctl", FINE ? T.ctlP : T.ctlM); set("#enter", T.enter);
+  set("#run", T.run); set("#act", P.hidden ? T.out : T.hide); set("#skip", T.skip); if (map) setGoal();
+  set("#again", T.again); set("#xBtn", T.xpost); set("#mapNote", T.mapNote); set("#recBtn", T.rec); $("#nm").placeholder = T.nameP;
+  set("#rkH", T.rank); set("#tabD", T.today); set("#tabA", T.alltime); set("#rkNote", T.rkNote); set("#rkBack", T.back);
+  cs.setWords({ ja: lang === "ja", vert: T.vert, c1: T.c1, c2: T.c2, c3: T.c3, bang: T.bang });
+  for (const b of document.querySelectorAll("#langs button")) b.classList.toggle("on", b.dataset.l === lang);
+  if (mode === "result") fillResult(false);
 }
 function resetPostKeepDark() { const u = pipe.u; u.tint.value = 0; u.aberr.value = 0; u.shake.value.set(0, 0); u.tear.value = 0; u.inv.value = 0; u.grain.value = 0.085; }
 
@@ -345,10 +416,19 @@ const joyEnd = (e) => { if (joy && e.pointerId === joy.id) { joy = null; $("#joy
 addEventListener("pointerup", joyEnd); addEventListener("pointercancel", joyEnd);
 const rb = $("#run"); rb.addEventListener("pointerdown", (e) => { runHeld = true; rb.classList.add("held"); e.preventDefault(); }); for (const ev of ["pointerup", "pointercancel", "pointerleave"]) rb.addEventListener(ev, () => { runHeld = false; rb.classList.remove("held"); });
 $("#act").addEventListener("click", toggleHide);
-$("#start").addEventListener("click", () => { snd.init(); gsap.to("#title", { opacity: 0, duration: 0.8, onComplete: () => ($("#title").style.display = "none") }); newRun(true); });
+$("#start").addEventListener("click", () => { if (busy) return; snd.init(); $("#title").style.pointerEvents = "none"; gsap.to("#title", { opacity: 0, duration: 0.8, onComplete: () => ($("#title").style.display = "none") }); newRun(true); });
 $("#skip").addEventListener("click", () => { if (mode !== "opening") return; const old = snd.ctx; snd.ctx = null; snd.init(); old.close(); drone = null; showHowto(); }); // 予約した声ごと切りかえる
 $("#enter").addEventListener("click", () => { snd.init(); startPlay(); });
-$("#again").addEventListener("click", () => { snd.init(); gsap.to("#result", { opacity: 0, duration: 0.5 }); newRun(false); });
+$("#again").addEventListener("click", () => { if (busy) return; snd.init(); $("#result").style.pointerEvents = "none"; gsap.to("#result", { opacity: 0, duration: 0.5 }); newRun(false); });
+$("#recBtn").addEventListener("click", doRecord);
+$("#nm").addEventListener("input", () => { if (sentName !== null) $("#recBtn").disabled = $("#nm").value.trim() === sentName; });
+$("#nm").addEventListener("keydown", (e) => { e.stopPropagation(); if (e.key === "Enter") { e.target.blur(); if (!$("#recBtn").disabled) doRecord(); } });
+$("#nm").addEventListener("keyup", (e) => e.stopPropagation());
+$("#xBtn").addEventListener("click", () => window.open(xIntent(postText, SHARE_URL), "_blank"));
+$("#rankBtn").addEventListener("click", () => openRank()); $("#rankBtn2").addEventListener("click", () => openRank());
+$("#tabD").addEventListener("click", () => openRank("d")); $("#tabA").addEventListener("click", () => openRank("all"));
+$("#rkBack").addEventListener("click", () => { rkTok++; $("#rank").classList.remove("on"); });
+for (const [code, name] of LANGS) { const b = document.createElement("button"); b.textContent = name; b.dataset.l = code; b.addEventListener("click", () => { lang = code; ls.set("jm_lang", code); applyLang(); }); $("#langs").appendChild(b); }
 
 function resize() { const w = innerWidth, h = innerHeight; renderer.setSize(w, h, false); pipe.resize(w, h); cam.aspect = w / h; cam.updateProjectionMatrix(); cs.setAspect(w / h); camY = w / h < 0.72 ? 16 : 14; }
 addEventListener("resize", resize); resize();
@@ -371,7 +451,7 @@ function frame() {
       if (P.hidden) hideView(dt); else { cam.position.x = lerp(cam.position.x, P.x, 1 - Math.exp(-dt * 7)); cam.position.z = lerp(cam.position.z, P.z + 5.8, 1 - Math.exp(-dt * 7)); cam.position.y = camY; cam.lookAt(cam.position.x, 0.5, cam.position.z - 6.2); }
       const u = pipe.u; u.aberr.value = fear * fear * 0.011; u.grain.value = (P.hidden ? 0.085 : 0.05) + fear * 0.07; u.vig.value = (P.hidden ? 1.5 : 0.7) + fear * 0.55; u.tear.value = chase ? 0.6 : 0;
       amb.intensity = P.hidden ? 4.2 : 1.15; sky.intensity = P.hidden ? 0.55 : 0; moon.intensity = 24; pipe.setShort(P.hidden ? 300 : playShort); u.gain.value = P.hidden ? 1 : 1.22;
-      const sb = $("#stam b"); sb.style.height = P.stamina * 100 + "%"; $("#stam").classList.toggle("low", P.stamina < 0.35 && P.plate); $("#stam").classList.toggle("gone", !P.plate);
+      const sb = $("#stam b"), se = $("#stam"), lab = P.plate ? T.plate : T.broken; sb.style.height = P.stamina * 100 + "%"; se.classList.toggle("low", P.stamina < 0.35 && P.plate); se.classList.toggle("gone", !P.plate); if (se.dataset.l !== lab) se.dataset.l = lab;
       if (mode === "caught") { u.shake.value.set((Math.random() - 0.5) * 0.02, (Math.random() - 0.5) * 0.02); u.aberr.value = 0.012; }
       pipe.render(scene, cam, now);
     }
@@ -385,9 +465,11 @@ document.body.dataset.mode = "title"; last = performance.now() / 1000;
 document.documentElement.style.setProperty("--top", (window.self !== window.top ? 96 : 10) + "px"); // アプリの中で開くと上にボタンが重なるので、その分さげる
 // 題の画面のうしろに、暗い屋敷を用意しておく
 map = genMap(20261117); world = buildWorld(map); scene.add(world.group); world.setView(false); cam.position.set(world.start.x, camY, world.start.z + 5.8); cam.lookAt(world.start.x, 0.5, world.start.z); pipe.u.dark.value = 1;
+applyLang();
 frame();
 // 自動で遊ばせて調べるための入口（音は鳴らさず、絵も描かずに時間だけ進める）
-function simulate(seconds, bot) {
+if (__DEV__) {
+const simulate = function (seconds, bot) {
   const dt = 1 / 30, names = ["voice", "step", "clink", "slide", "chime", "creak", "croak", "sting", "boom", "heart", "shatter", "ring"], saved = {}, ev = [];
   for (const k of names) { saved[k] = snd[k]; snd[k] = () => ({ starts: [], total: 0 }); }
   let still = 0, lx = O.x, lz = O.z, maxStill = 0, t = 0;
@@ -400,5 +482,6 @@ function simulate(seconds, bot) {
   } } catch (e) { ev.push("ERR " + e.message); }
   for (const k of names) snd[k] = saved[k]; botVec = null; runHeld = false;
   return { t, mode, ev, maxStill, plate: P.plate, key: P.hasKey, state: O.state };
+};
+window.__g = { Sound, kanaMoras, COUNTS, lockQuality() { qLock = true; }, get quality() { return quality; }, simulate, seekOpening(t) { opT0 = now - t; }, seekCatch(t) { cs.t0 = now - t; }, minT() { return minTimeOfMap(map); }, skip() { $("#skip").click(); }, P, O, get map() { return map; }, get world() { return world; }, get mode() { return mode; }, newRun, toggleHide, caught, escape, showResult, applyLang, openRank, setLang(l) { lang = l; applyLang(); }, get T() { return T; }, set finT(v) { finT = v; }, snd, pipe, ok, cam, startPlay, breakPlate, set time(v) { tPlay = v; } };
 }
-window.__g = { Sound, kanaMoras, COUNTS, lockQuality() { qLock = true; }, get quality() { return quality; }, simulate, seekOpening(t) { opT0 = now - t; }, skip() { $("#skip").click(); }, P, O, get map() { return map; }, get world() { return world; }, get mode() { return mode; }, newRun, toggleHide, caught, snd, pipe, ok, cam, startPlay, breakPlate, set time(v) { tPlay = v; } };

@@ -13,14 +13,21 @@ const T1 = 1.4, GL = 2.75, T2 = 4.1, ON2 = 3.5, OFF2 = 6.55, T3 = 7.35, CUT = 9.
 const durOf = (L) => L.m.reduce((s, m) => s + m.d, 0);
 const startsOf = (L) => { let t = 0; return L.m.map((m) => { const s = t; t += m.d; return s; }); };
 
-// 字幕：[文字, その文字が出る時刻(秒)]
-function subtitlePlan() {
+// 字幕：[文字, その文字が出る時刻(秒)]。声は日本語のままなので、ほかの言葉は声の長さに合わせて順に出す
+function subtitlePlan(W) {
   const s1 = startsOf(LINES.omae1), s2 = startsOf(LINES.omae2), s3 = startsOf(LINES.hameta);
   const e1 = durOf(LINES.omae1), e2 = durOf(LINES.omae2);
-  return [
+  if (!W || W.ja) return [
     { cls: "l1", chars: [["お", T1 + s1[0]], ["前", T1 + s1[1]], ["が", T1 + s1[3]], ["…", T1 + e1 - 0.25], ["…", T1 + e1 + 0.15]] },
     { cls: "l2", chars: [["お", T2 + s2[0]], ["前", T2 + s2[1]], ["が", T2 + s2[3]], ["…", T2 + e2 - 0.7], ["…", T2 + e2 - 0.4], ["…", T2 + e2 - 0.1], ["…", T2 + e2 + 0.2]] },
-    { cls: "l3", chars: [["私", T3 + s3[0]], ["を", T3 + s3[3]], ["は", T3 + s3[4]], ["め", T3 + s3[5]], ["た", T3 + s3[6]], ["の", T3 + s3[7]], ["か", T3 + s3[8]], ["！！！", T3 + s3[8] + 0.22, "bang"]] },
+    { cls: "l3", chars: [["私", T3 + s3[0]], ["を", T3 + s3[3]], ["は", T3 + s3[4]], ["め", T3 + s3[5]], ["た", T3 + s3[6]], ["の", T3 + s3[7]], ["か", T3 + s3[8], "last"], ["！！！", T3 + s3[8] + 0.22, "bang"]] },
+  ];
+  const spread = (arr, t0, e, dot0, dotStep) => { const w = arr.filter((c) => c !== "…"), out = w.map((c, i) => [c, t0 + (i / w.length) * Math.max(0.3, e - 0.55)]); for (let j = 0; j < arr.length - w.length; j++) out.push(["…", t0 + e + dot0 + j * dotStep]); return out; };
+  const n3 = W.c3.length;
+  return [
+    { cls: "l1", chars: spread(W.c1, T1, e1, -0.25, 0.4) },
+    { cls: "l2", chars: spread(W.c2, T2, e2, -0.7, 0.3) },
+    { cls: "l3", chars: [...W.c3.map((c, i) => [c, T3 + s3[8] * (i / Math.max(1, n3 - 1)), i === n3 - 1 ? "last" : ""]), [W.bang, T3 + s3[8] + 0.22, "bang"]] },
   ];
 }
 
@@ -34,12 +41,15 @@ export function makeCatchScene(layer, shared) {
   const under = new THREE.PointLight(0x9db3ac, 0, 3, 1.4); scene.add(under);
   const amb = new THREE.AmbientLight(0x202830, 0); scene.add(amb);
 
-  let els = [], plan = subtitlePlan(), fired = new Set(), lastT = -1;
+  let els = [], words = null, plan = subtitlePlan(), fired = new Set(), lastT = -1;
+  function setWords(W) { words = W; plan = subtitlePlan(W); buildSubs(); lastT = -1; }
   function buildSubs() {
     layer.innerHTML = ""; els = []; fired = new Set();
     for (const L of plan) { // 「…」は文字に頼らず、点を縦に描く（端末によって横向きに出るため）
       const d = document.createElement("div"); d.className = "sub " + L.cls;
-      L.chars.forEach(([ch, at, extra], i) => { const s = document.createElement("span"); if (ch === "…") { s.className = "dots"; s.textContent = "口"; } else s.textContent = ch; if (extra) s.className = extra; d.appendChild(s); els.push({ s, at, cls: L.cls, i, line: d, ch }); });
+      const vert = !words || words.vert;
+      if (L.cls === "l3") { const n = L.chars.length - 1; d.style.fontSize = vert ? `min(${((n > 7 ? 66 : 74) / Math.max(7, n)).toFixed(2)}vh, 27vw)` : "min(15vw, 10vh)"; d.dataset.n = n; }
+      L.chars.forEach(([ch, at, extra], i) => { const s = document.createElement("span"); if (ch === "…" && vert) { s.className = "dots"; s.textContent = "口"; } else s.textContent = ch; if (extra === "bang") s.className = "bang"; d.appendChild(s); els.push({ s, at, cls: L.cls, i, line: d, ch, last: extra === "last" }); });
       layer.appendChild(d);
     }
   }
@@ -48,9 +58,9 @@ export function makeCatchScene(layer, shared) {
     if (e.cls === "l1") gsap.fromTo(s, { opacity: 0, filter: "blur(7px)", y: -6 }, { opacity: 0.86, filter: "blur(0px)", y: 0, duration: 0.5, ease: "power1.out" });
     else if (e.cls === "l2") gsap.fromTo(s, { opacity: 0, filter: "blur(5px)", x: gsap.utils.random(-3, 3) }, { opacity: 1, filter: "blur(0px)", duration: 0.28, ease: "power2.out" });
     else {
-      const k = 0.92 + e.i * 0.075;
+      const n = +e.line.dataset.n || 7, hz = words && !words.vert, k = 0.92 + e.i * 0.075 * Math.min(1, 6 / Math.max(1, n - 1)) * (hz ? 0.5 : 1);
       gsap.fromTo(s, { opacity: 1, scale: k * 1.9, rotation: gsap.utils.random(-9, 9), x: gsap.utils.random(-14, 14) }, { scale: k, rotation: gsap.utils.random(-4, 4), duration: 0.07, ease: "power4.out" });
-      if (e.ch === "か") gsap.to(s, { scaleY: k * 2.6, scaleX: k * 0.86, duration: 1.25, ease: "power1.in", delay: 0.08 });
+      if (e.last) gsap.to(s, { scaleY: k * (hz ? 1.9 : 2.6), scaleX: k * 0.86, duration: 1.25, ease: "power1.in", delay: 0.08 });
       if (s.className === "bang") gsap.fromTo(s, { opacity: 1, y: -30 }, { y: 0, duration: 0.09 });
     }
   }
@@ -127,5 +137,5 @@ export function makeCatchScene(layer, shared) {
   }
   buildSubs();
   function setAspect(a) { cam.aspect = a; cam.updateProjectionMatrix(); }
-  return { scene, cam, at, playAudio, END, setAspect, reset: buildSubs, begin };
+  return { scene, cam, at, playAudio, END, setAspect, reset: buildSubs, begin, setWords };
 }
